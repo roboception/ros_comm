@@ -44,6 +44,8 @@
 #include <boost/format.hpp>
 
 #include "rosgraph_msgs/Clock.h"
+#include <algorithm>
+#include <rosbag/player.h>
 
 #define foreach BOOST_FOREACH
 
@@ -183,6 +185,9 @@ void Player::publish() {
       return;
     }
 
+    // setup remote control service
+    ros::ServiceServer remoteCtrlSrv = node_handle_.advertiseService("remoteControl", &Player::remoteCtrlCallback, this);
+
     // Advertise all of our messages
     foreach(const ConnectionInfo* c, view.getConnections())
     {
@@ -294,6 +299,8 @@ void Player::doPublish(MessageInstance const& m) {
     map<string, ros::Publisher>::iterator pub_iter = publishers_.find(callerid_topic);
     ROS_ASSERT(pub_iter != publishers_.end());
 
+    ros::spinOnce();
+
     // If immediate specified, play immediately
     if (options_.at_once) {
         time_publisher_.stepClock();
@@ -335,6 +342,7 @@ void Player::doPublish(MessageInstance const& m) {
         bool charsleftorpaused = true;
         while (charsleftorpaused && node_handle_.ok())
         {
+            ros::spinOnce();
             switch (readCharFromStdin()){
             case ' ':
                 paused_ = !paused_;
@@ -436,6 +444,7 @@ void Player::doKeepAlive() {
                 }
                 else
                     charsleftorpaused = false;
+                ROS_INFO_STREAM("Paused: " << paused_);
             }
         }
 
@@ -537,6 +546,42 @@ int Player::readCharFromStdin() {
         return EOF;
     return getc(stdin);
 #endif
+}
+
+bool Player::remoteCtrlCallback(rc_msgs::ThrottleBag::Request &req,
+                        rc_msgs::ThrottleBag::Request &res){
+  ROS_INFO_STREAM("Service callback for command: " << std::hex << req.cmd);
+
+  switch(req.cmd){
+    case rc_msgs::ThrottleBagRequest::CMD_PLAY:
+      if(!req.id.size()){
+        paused_ = false;
+      }else{
+        // check paused flag for id
+        throttleDataMap_[req.id] = {"", 0, false};
+        paused_ = std::any_of(throttleDataMap_.begin(), throttleDataMap_.end(), [](pair<const string, throttleData_t> &entry){return entry.second.pause;});
+      }
+      break;
+    case rc_msgs::ThrottleBagRequest::CMD_PAUSE:
+      paused_ = true;
+      if(req.id.size()){
+        // set paused flag for corresponding subscriber slot
+        throttleDataMap_[req.id] = {"", 0, true};
+        ROS_INFO_STREAM("Setting pause for id=" << req.id << ", topic=" << req.topic);
+      }
+      break;
+    case rc_msgs::ThrottleBagRequest::CMD_STOP:
+      ROS_WARN_STREAM("Command CMD_RESTART not implemented yet");
+      break;
+    case rc_msgs::ThrottleBagRequest::CMD_RESTART:
+      ROS_WARN_STREAM("Command CMD_RESTART not implemented yet");
+      break;
+    case rc_msgs::ThrottleBagRequest::CMD_AUTO:
+      ROS_WARN_STREAM("Command CMD_AUTO not implemented yet");
+      break;
+
+  }
+  return true;
 }
 
 TimePublisher::TimePublisher() : time_scale_(1.0)

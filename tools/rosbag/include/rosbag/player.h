@@ -52,6 +52,7 @@
 
 #include "rosbag/time_translator.h"
 #include "rosbag/macros.h"
+#include "rc_msgs/ThrottleBag.h"
 
 namespace rosbag {
 
@@ -178,6 +179,16 @@ private:
 
 
 private:
+
+    bool remoteCtrlCallback(rc_msgs::ThrottleBag::Request &req,
+                            rc_msgs::ThrottleBag::Request &res);
+    typedef struct {
+      std::string topic;
+      unsigned int qsize;
+      bool pause;
+    } throttleData_t;
+
+    std::map<std::string, throttleData_t> throttleDataMap_;
 
     PlayerOptions options_;
 
