@@ -175,17 +175,22 @@ private:
 
     void doKeepAlive();
 
-    void printTime();
+    void printTime(bool pause = false);
 
 
 private:
 
     bool remoteCtrlCallback(rc_msgs::ThrottleBag::Request &req,
                             rc_msgs::ThrottleBag::Request &res);
+
+    bool throttlePlayback(rosbag::MessageInstance const& m);
+
+    void toggleUserPause();
+
+    void updateThrottleData(rosbag::MessageInstance const& m);
     typedef struct {
       std::string topic;
-      unsigned int qsize;
-      bool pause;
+      int qsize;
     } throttleData_t;
 
     std::map<std::string, throttleData_t> throttleDataMap_;
@@ -194,11 +199,11 @@ private:
 
     ros::NodeHandle node_handle_;
 
-    bool paused_;
-
     bool pause_for_topics_;
 
     ros::WallTime paused_time_;
+
+    ros::WallTime horizon_;
 
     std::vector<boost::shared_ptr<Bag> >  bags_;
     std::map<std::string, ros::Publisher> publishers_;

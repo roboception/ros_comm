@@ -104,7 +104,6 @@ void PlayerOptions::check() {
 
 Player::Player(PlayerOptions const& options) :
     options_(options),
-    paused_(false),
     // If we were given a list of topics to pause on, then go into that mode
     // by default (it can be toggled later via 't' from the keyboard).
     pause_for_topics_(options_.pause_topics.size() > 0),
@@ -186,7 +185,7 @@ void Player::publish() {
     }
 
     // setup remote control service
-    ros::ServiceServer remoteCtrlSrv = node_handle_.advertiseService("remoteControl", &Player::remoteCtrlCallback, this);
+    ros::ServiceServer remoteCtrlSrv = node_handle_.advertiseService("bagControl", &Player::remoteCtrlCallback, this);
 
     // Advertise all of our messages
     foreach(const ConnectionInfo* c, view.getConnections())
@@ -214,7 +213,7 @@ void Player::publish() {
 
     std::cout << std::endl << "Hit space to toggle paused, or 's' to step." << std::endl;
 
-    paused_ = options_.start_paused;
+    throttleDataMap_["USER"] =  {"", (options_.start_paused?0:-1)};
 
     while (true) {
         // Set up our time_translator and publishers
@@ -264,14 +263,14 @@ void Player::publish() {
     ros::shutdown();
 }
 
-void Player::printTime()
+void Player::printTime(bool pause)
 {
     if (!options_.quiet) {
 
         ros::Time current_time = time_publisher_.getTime();
         ros::Duration d = current_time - start_time_;
 
-        if (paused_)
+        if (pause)
         {
             printf("\r [PAUSED]   Bag Time: %13.6f   Duration: %.6f / %.6f     \r", time_publisher_.getTime().toSec(), d.toSec(), bag_length_.toSec());
         }
@@ -289,10 +288,11 @@ void Player::doPublish(MessageInstance const& m) {
     string callerid       = m.getCallerId();
     
     ros::Time translated = time_translator_.translate(time);
-    ros::WallTime horizon = ros::WallTime(translated.sec, translated.nsec);
+    horizon_ = ros::WallTime(translated.sec, translated.nsec);
+
 
     time_publisher_.setHorizon(time);
-    time_publisher_.setWCHorizon(horizon);
+    time_publisher_.setWCHorizon(horizon_);
 
     string callerid_topic = callerid + topic;
 
@@ -303,10 +303,18 @@ void Player::doPublish(MessageInstance const& m) {
 
     // If immediate specified, play immediately
     if (options_.at_once) {
-        time_publisher_.stepClock();
-        pub_iter->second.publish(m);
-        printTime();
-        return;
+      while(throttlePlayback(m) && node_handle_.ok())
+      {
+          time_publisher_.runStalledClock(ros::WallDuration(.1));
+          ros::spinOnce();
+          printTime(true);
+      }
+      time_publisher_.stepClock();
+      pub_iter->second.publish(m);
+      updateThrottleData(m);
+      printTime();
+
+      return;
     }
 
     // If skip_empty is specified, skip this region and shift.
@@ -314,11 +322,12 @@ void Player::doPublish(MessageInstance const& m) {
     {
       time_publisher_.stepClock();
 
-      ros::WallDuration shift = ros::WallTime::now() - horizon ;
+      ros::WallDuration shift = ros::WallTime::now() - horizon_ ;
       time_translator_.shift(ros::Duration(shift.sec, shift.nsec));
-      horizon += shift;
-      time_publisher_.setWCHorizon(horizon);
+      horizon_ += shift;
+      time_publisher_.setWCHorizon(horizon_);
       (pub_iter->second).publish(m);
+      updateThrottleData(m);
       printTime();
       return;
     }
@@ -331,72 +340,58 @@ void Player::doPublish(MessageInstance const& m) {
         {
             if (topic == *i)
             {
-                paused_ = true;
+                throttleDataMap_["USER"] = {"", 0};
                 paused_time_ = ros::WallTime::now();
             }
         }
     }
 
-    while ((paused_ || !time_publisher_.horizonReached()) && node_handle_.ok())
+    do
     {
-        bool charsleftorpaused = true;
-        while (charsleftorpaused && node_handle_.ok())
-        {
-            ros::spinOnce();
-            switch (readCharFromStdin()){
-            case ' ':
-                paused_ = !paused_;
-                if (paused_) {
-                    paused_time_ = ros::WallTime::now();
-                }
-                else
-                {
-                    ros::WallDuration shift = ros::WallTime::now() - paused_time_;
-                    paused_time_ = ros::WallTime::now();
-         
-                    time_translator_.shift(ros::Duration(shift.sec, shift.nsec));
+        ros::spinOnce();
 
-                    horizon += shift;
-                    time_publisher_.setWCHorizon(horizon);
-                }
-                break;
-            case 's':
-                if (paused_) {
-                    time_publisher_.stepClock();
+        switch (readCharFromStdin()){
+        case ' ':
+            toggleUserPause();
+            break;
+        case 's':
+            if (throttlePlayback(m)) {
+                time_publisher_.stepClock();
 
-                    ros::WallDuration shift = ros::WallTime::now() - horizon ;
-                    paused_time_ = ros::WallTime::now();
+                ros::WallDuration shift = ros::WallTime::now() - horizon_ ;
+                paused_time_ = ros::WallTime::now();
 
-                    time_translator_.shift(ros::Duration(shift.sec, shift.nsec));
+                time_translator_.shift(ros::Duration(shift.sec, shift.nsec));
 
-                    horizon += shift;
-                    time_publisher_.setWCHorizon(horizon);
-            
-                    (pub_iter->second).publish(m);
+                horizon_ += shift;
+                time_publisher_.setWCHorizon(horizon_);
 
-                    printTime();
-                    return;
-                }
-                break;
-            case 't':
-                pause_for_topics_ = !pause_for_topics_;
-                break;
-            case EOF:
-                if (paused_)
-                {
-                    printTime();
-                    time_publisher_.runStalledClock(ros::WallDuration(.1));
-                }
-                else
-                    charsleftorpaused = false;
+                (pub_iter->second).publish(m);
+                updateThrottleData(m);
+
+                printTime(true);
+                return;
             }
+            break;
+        case 't':
+            pause_for_topics_ = !pause_for_topics_;
+            break;
+        };
+
+
+        if(throttlePlayback(m)){
+          printTime(true);
+          time_publisher_.runStalledClock(ros::WallDuration(.1));
+        }else{
+          printTime();
+          time_publisher_.runClock(ros::WallDuration(.1));
         }
 
-        printTime();
-        time_publisher_.runClock(ros::WallDuration(.1));
-    }
+    }while ((throttlePlayback(m) || !time_publisher_.horizonReached())
+            && node_handle_.ok());
 
     pub_iter->second.publish(m);
+    updateThrottleData(m);
 }
 
 
@@ -414,15 +409,15 @@ void Player::doKeepAlive() {
         return;
     }
 
-    while ((paused_ || !time_publisher_.horizonReached()) && node_handle_.ok())
+    while ((throttleDataMap_["USER"].qsize == 0 || !time_publisher_.horizonReached()) && node_handle_.ok())
     {
         bool charsleftorpaused = true;
         while (charsleftorpaused && node_handle_.ok())
         {
             switch (readCharFromStdin()){
             case ' ':
-                paused_ = !paused_;
-                if (paused_) {
+              throttleDataMap_["USER"].qsize = (throttleDataMap_["USER"].qsize?0:-1);
+                if (throttleDataMap_["USER"].qsize == 0) {
                     paused_time_ = ros::WallTime::now();
                 }
                 else
@@ -437,14 +432,13 @@ void Player::doKeepAlive() {
                 }
                 break;
             case EOF:
-                if (paused_)
+                if (throttleDataMap_["USER"].qsize == 0)
                 {
-                    printTime();
+                    printTime(true);
                     time_publisher_.runStalledClock(ros::WallDuration(.1));
                 }
                 else
                     charsleftorpaused = false;
-                ROS_INFO_STREAM("Paused: " << paused_);
             }
         }
 
@@ -550,38 +544,72 @@ int Player::readCharFromStdin() {
 
 bool Player::remoteCtrlCallback(rc_msgs::ThrottleBag::Request &req,
                         rc_msgs::ThrottleBag::Request &res){
-  ROS_INFO_STREAM("Service callback for command: " << std::hex << req.cmd);
-
-  switch(req.cmd){
-    case rc_msgs::ThrottleBagRequest::CMD_PLAY:
-      if(!req.id.size()){
-        paused_ = false;
-      }else{
-        // check paused flag for id
-        throttleDataMap_[req.id] = {"", 0, false};
-        paused_ = std::any_of(throttleDataMap_.begin(), throttleDataMap_.end(), [](pair<const string, throttleData_t> &entry){return entry.second.pause;});
-      }
-      break;
-    case rc_msgs::ThrottleBagRequest::CMD_PAUSE:
-      paused_ = true;
-      if(req.id.size()){
-        // set paused flag for corresponding subscriber slot
-        throttleDataMap_[req.id] = {"", 0, true};
-        ROS_INFO_STREAM("Setting pause for id=" << req.id << ", topic=" << req.topic);
-      }
-      break;
-    case rc_msgs::ThrottleBagRequest::CMD_STOP:
-      ROS_WARN_STREAM("Command CMD_RESTART not implemented yet");
-      break;
-    case rc_msgs::ThrottleBagRequest::CMD_RESTART:
-      ROS_WARN_STREAM("Command CMD_RESTART not implemented yet");
-      break;
-    case rc_msgs::ThrottleBagRequest::CMD_AUTO:
-      ROS_WARN_STREAM("Command CMD_AUTO not implemented yet");
-      break;
-
+  if(req.id.size()){
+    if(req.id == "USER"
+       && ((req.qsize == 0) != (throttleDataMap_["USER"].qsize == 0))){
+      toggleUserPause();
+      throttleDataMap_["USER"].qsize = req.qsize;
+    }else{
+      throttleDataMap_[req.id] = {req.topic, req.qsize};
+    }
+  }else{
+    // Print queuing information
+    ROS_INFO_STREAM("\nThrottle queue:");
+    for(auto &entry: throttleDataMap_){
+      ROS_INFO_STREAM("Queue space for subscriber \""
+                              << entry.first << "\" on topic \""
+                              << entry.second.topic << "\": "
+                              << entry.second.qsize);
+    }
   }
+
   return true;
+}
+
+bool Player::throttlePlayback(rosbag::MessageInstance const &m)
+{
+  bool userPause = (throttleDataMap_["USER"].qsize == 0);
+  bool topicPause =
+          std::any_of(throttleDataMap_.begin(), throttleDataMap_.end(),
+                      [m](std::pair<const std::string, throttleData_t> &entry)
+                         {return (entry.second.qsize==0)
+                                    && (entry.second.topic == m.getTopic());});
+  return userPause || topicPause;
+}
+
+void Player::updateThrottleData(rosbag::MessageInstance const& m){
+  for(auto &entry: throttleDataMap_){
+    if(entry.second.topic == m.getTopic())
+    {
+      if (entry.second.qsize > 0)
+      {
+        entry.second.qsize--;
+      }
+    }else if( entry.first == "USER" ){
+      if(entry.second.qsize > 1){
+        entry.second.qsize--;
+      }else if(entry.second.qsize == 1){
+        toggleUserPause();
+      }
+    }
+  }
+}
+
+void Player::toggleUserPause()
+{
+
+  // toggle run state
+  throttleDataMap_["USER"].qsize = (throttleDataMap_["USER"].qsize?0:-1);
+
+  if(throttleDataMap_["USER"].qsize == 0){
+    paused_time_ = ros::WallTime::now();
+  }else{
+    ros::WallDuration shift = ros::WallTime::now() - paused_time_;
+    time_translator_.shift(ros::Duration(shift.sec, shift.nsec));
+    horizon_ += shift;
+    time_publisher_.setWCHorizon(horizon_);
+  }
+
 }
 
 TimePublisher::TimePublisher() : time_scale_(1.0)
@@ -606,7 +634,7 @@ void TimePublisher::setTimeScale(double time_scale)
 
 void TimePublisher::setHorizon(const ros::Time& horizon)
 {
-    horizon_ = horizon;
+  horizon_ = horizon;
 }
 
 void TimePublisher::setWCHorizon(const ros::WallTime& horizon)
@@ -633,10 +661,9 @@ void TimePublisher::runClock(const ros::WallDuration& duration)
         ros::WallTime t = ros::WallTime::now();
         ros::WallTime done = t + duration;
 
-        while (t < done && t < wc_horizon_)
+        do
         {
             ros::WallDuration leftHorizonWC = wc_horizon_ - t;
-
             ros::Duration d(leftHorizonWC.sec, leftHorizonWC.nsec);
             d *= time_scale_;
 
@@ -661,7 +688,8 @@ void TimePublisher::runClock(const ros::WallDuration& duration)
             ros::WallTime::sleepUntil(target);
 
             t = ros::WallTime::now();
-        }
+        }while (t < done && t < wc_horizon_);
+
     } else {
 
         ros::WallTime t = ros::WallTime::now();
