@@ -224,6 +224,8 @@ private:
 
     ros::Time start_time_;
     ros::Duration bag_length_;
+
+    ros::M_string invRemap;
 };
 
 

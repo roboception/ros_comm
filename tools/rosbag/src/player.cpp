@@ -32,6 +32,7 @@
 *  POSSIBILITY OF SUCH DAMAGE.
 ********************************************************************/
 
+#include "ros/names.h"
 #include "rosbag/player.h"
 #include "rosbag/message_instance.h"
 #include "rosbag/view.h"
@@ -109,6 +110,11 @@ Player::Player(PlayerOptions const& options) :
     pause_for_topics_(options_.pause_topics.size() > 0),
     terminal_modified_(false)
 {
+    // create inverse remapping map
+    for(auto &entry: ros::names::getRemappings()){
+        invRemap[entry.second] = entry.first;
+        ROS_INFO_STREAM("Remapping from " << entry.first << "=>" << entry.second);
+    }
 }
 
 Player::~Player() {
@@ -381,10 +387,10 @@ void Player::doPublish(MessageInstance const& m) {
 
         if(throttlePlayback(m)){
           printTime(true);
-          time_publisher_.runStalledClock(ros::WallDuration(.1));
+          time_publisher_.runStalledClock(ros::WallDuration(.01));
         }else{
           printTime();
-          time_publisher_.runClock(ros::WallDuration(.1));
+          time_publisher_.runClock(ros::WallDuration(.01));
         }
 
     }while ((throttlePlayback(m) || !time_publisher_.horizonReached())
@@ -550,7 +556,14 @@ bool Player::remoteCtrlCallback(rc_msgs::ThrottleBag::Request &req,
       toggleUserPause();
       throttleDataMap_["USER"].qsize = req.qsize;
     }else{
-      throttleDataMap_[req.id] = {req.topic, req.qsize};
+      auto remapEntry = invRemap.find(req.topic);
+      std::string topic;
+      if(remapEntry != invRemap.end()){
+          topic = remapEntry->second;
+      }else{
+          topic = req.topic; 
+      }
+      throttleDataMap_[req.id] = {topic, throttleDataMap_[req.id].qsize + req.qsize};
     }
   }else{
     // Print queuing information
