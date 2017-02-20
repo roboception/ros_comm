@@ -19,7 +19,7 @@ include_directories(include ${catkin_INCLUDE_DIRS} ${Boost_INCLUDE_DIRS})
 catkin_package(
   LIBRARIES rosbag
   INCLUDE_DIRS include
-  CATKIN_DEPENDS rosbag_storage rosconsole roscpp topic_tools xmlrpcpp)
+  CATKIN_DEPENDS rosbag_storage rosconsole roscpp topic_tools xmlrpcpp rc_bagthrottler)
 
 add_library(rosbag
   src/player.cpp

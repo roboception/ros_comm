@@ -52,7 +52,7 @@
 
 #include "rosbag/time_translator.h"
 #include "rosbag/macros.h"
-#include "rc_msgs/ThrottleBag.h"
+#include "rc_bagthrottler/ThrottleBag.h"
 
 namespace rosbag {
 
@@ -180,8 +180,8 @@ private:
 
 private:
 
-    bool remoteCtrlCallback(rc_msgs::ThrottleBag::Request &req,
-                            rc_msgs::ThrottleBag::Request &res);
+    bool remoteCtrlCallback(rc_bagthrottler::ThrottleBag::Request &req,
+                            rc_bagthrottler::ThrottleBag::Request &res);
 
     bool throttlePlayback(rosbag::MessageInstance const& m);
 

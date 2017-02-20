@@ -548,8 +548,8 @@ int Player::readCharFromStdin() {
 #endif
 }
 
-bool Player::remoteCtrlCallback(rc_msgs::ThrottleBag::Request &req,
-                        rc_msgs::ThrottleBag::Request &res){
+bool Player::remoteCtrlCallback(rc_bagthrottler::ThrottleBag::Request &req,
+                        rc_bagthrottler::ThrottleBag::Request &res){
   if(req.id.size()){
     if(req.id == "USER"
        && ((req.qsize == 0) != (throttleDataMap_["USER"].qsize == 0))){
